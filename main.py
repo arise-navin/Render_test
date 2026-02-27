@@ -17,6 +17,7 @@ import requests as _http_requests
 import threading
 import os
 import uuid
+from services.credentials import set_credentials, get_credentials, is_configured
 
 # =====================================================
 # Session / Auth helpers
@@ -55,20 +56,12 @@ def _require_session(request: Request) -> dict:
 
 
 def _inject_credentials(sess: dict):
-    """Inject session credentials into all service modules so agents use them."""
-    instance = sess.get("sn_instance", "")
-    user     = sess.get("sn_username", "")
-    password = sess.get("sn_password", "")
-
-    import services.servicenow_client as _snc
-    import services.sync_service      as _ss
-
-    _snc.SN_INSTANCE = instance
-    _snc.SN_USER     = user
-    _snc.SN_PASS     = password
-    _ss.SN_INSTANCE  = instance
-    _ss.SN_USER      = user
-    _ss.SN_PASS      = password
+    """Update the live credentials store from the session — all modules see it instantly."""
+    set_credentials(
+        instance = sess.get("sn_instance", ""),
+        user     = sess.get("sn_username", ""),
+        password = sess.get("sn_password", ""),
+    )
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
     HRFlowable, KeepTogether, PageBreak
@@ -96,21 +89,13 @@ _pdf_jobs: dict = {}  # job_id -> {"status": "pending"|"done"|"error", "path": .
 _sync_started = False
 
 def _maybe_start_sync(sn_instance: str, sn_user: str, sn_pass: str):
-    """Start the sync loop once (first successful login)."""
+    """Start the sync loop once on first successful login."""
     global _sync_started
     if _sync_started:
         return
     _sync_started = True
-    # Patch module-level globals so sync_service uses the right credentials
-    import services.sync_service as _ss
-    _ss.SN_INSTANCE = sn_instance
-    _ss.SN_USER     = sn_user
-    _ss.SN_PASS     = sn_pass
-    threading.Thread(
-        target=start_sync_loop,
-        args=(sn_instance, sn_user, sn_pass),
-        daemon=True
-    ).start()
+    # Credentials are already set via set_credentials() before this is called
+    threading.Thread(target=start_sync_loop, daemon=True).start()
     print(f"✓ Delta Sync started → {sn_instance}")
 
 @asynccontextmanager
@@ -217,7 +202,10 @@ def auth_login(req: LoginRequest, response: Response):
     }
     token = _make_token(payload)
 
-    # Kick off background sync with these credentials
+    # Set live credentials FIRST so sync and agents use them immediately
+    set_credentials(instance, req.sn_username, req.sn_password)
+
+    # Kick off background sync (once)
     _maybe_start_sync(instance, req.sn_username, req.sn_password)
 
     resp = JSONResponse({"success": True, "role": req.role, "instance": instance})
@@ -373,6 +361,10 @@ def run_all_agents(request: Request):
 
 @app.post("/chat")
 def chat_endpoint(chat_message: ChatMessage, request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"error": "Not authenticated", "auth_required": True}, status_code=401)
+    _inject_credentials(sess)
 
     try:
         user_message = chat_message.message
@@ -1152,7 +1144,11 @@ def _build_pdf_in_background(job_id: str):
 
 
 @app.api_route("/generate-report", methods=["GET", "POST"])
-def generate_report(background_tasks: BackgroundTasks):
+def generate_report(background_tasks: BackgroundTasks, request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"error": "Not authenticated", "auth_required": True}, status_code=401)
+    _inject_credentials(sess)
     """
     Kicks off async PDF generation and returns a job_id immediately.
     Poll /report-status/{job_id} to check progress.

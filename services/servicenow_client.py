@@ -1,34 +1,33 @@
 import requests
 import os
-from datetime import datetime
 from requests.auth import HTTPBasicAuth
-
-# ── Credentials ───────────────────────────────────────────────────────────────
-# Prefer environment variables; fall back to dev defaults
-SN_INSTANCE = os.getenv("SN_INSTANCE", "https://dev229640.service-now.com")
-SN_USER     = os.getenv("SN_USERNAME", "admin")
-SN_PASS     = os.getenv("SN_PASSWORD", "^Iu8XizJm6P%")
+from services.credentials import get_credentials
 
 
 def fetch_table(table, last_sync=None, limit=None):
-    """
-    Fetch records from a ServiceNow table.
-    If limit is None we fetch ALL records using offset pagination (no cap).
-    Pass limit=N for a single-page bounded fetch (backwards-compatible).
-    """
+    """Fetch records from a ServiceNow table using live credentials."""
+    creds    = get_credentials()
+    instance = creds["instance"]
+    user     = creds["user"]
+    password = creds["password"]
+
+    if not instance or not user:
+        print(f"[sn_client] No credentials set — skipping {table}")
+        return []
+
     if limit is not None:
-        url   = f"{SN_INSTANCE}/api/now/table/{table}"
-        query = f"sys_updated_on>{last_sync}" if last_sync else ""
+        url    = f"{instance}/api/now/table/{table}"
+        query  = f"sys_updated_on>{last_sync}" if last_sync else ""
         params = {"sysparm_limit": limit, "sysparm_display_value": "false"}
         if query:
             params["sysparm_query"] = query
-        r = requests.get(url, auth=(SN_USER, SN_PASS),
+        r = requests.get(url, auth=(user, password),
                          headers={"Accept": "application/json"},
                          params=params, timeout=60)
         r.raise_for_status()
         return r.json().get("result", [])
 
-    # ── Full paginated fetch — scans ALL data, no artificial limit ────────────
+    # Full paginated fetch
     records = []
     offset  = 0
     page_sz = 1000
@@ -44,8 +43,8 @@ def fetch_table(table, last_sync=None, limit=None):
             params["sysparm_query"] = query
 
         r = requests.get(
-            f"{SN_INSTANCE}/api/now/table/{table}",
-            auth=(SN_USER, SN_PASS),
+            f"{instance}/api/now/table/{table}",
+            auth=(user, password),
             headers={"Accept": "application/json"},
             params=params,
             timeout=60,
@@ -59,20 +58,28 @@ def fetch_table(table, last_sync=None, limit=None):
         records.extend(batch)
         offset += page_sz
         if len(batch) < page_sz:
-            break   # reached last page
+            break
 
     return records
 
 
 def get_real_table_data(table, query=None, fields=None):
     """Helper used by some agents for targeted, filtered queries."""
-    url    = f"{SN_INSTANCE}/api/now/table/{table}"
+    creds    = get_credentials()
+    instance = creds["instance"]
+    user     = creds["user"]
+    password = creds["password"]
+
+    if not instance or not user:
+        return []
+
+    url    = f"{instance}/api/now/table/{table}"
     params = {}
     if query:
         params["sysparm_query"] = query
     if fields:
         params["sysparm_fields"] = fields
-    response = requests.get(url, auth=HTTPBasicAuth(SN_USER, SN_PASS),
+    response = requests.get(url, auth=HTTPBasicAuth(user, password),
                              params=params, timeout=60)
     if response.status_code == 200:
         return response.json().get("result", [])

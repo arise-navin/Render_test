@@ -21,11 +21,18 @@ from datetime import datetime
 from .database import upsert_records, get_last_timestamp, get_table_count
 
 # =====================================================
-# SERVICENOW CONFIG  (env vars → dev fallbacks)
+# SERVICENOW CONFIG — reads from live credentials store
 # =====================================================
-SN_INSTANCE = os.getenv("SN_INSTANCE", "https://dev229640.service-now.com")
-SN_USER     = os.getenv("SN_USERNAME", "admin")
-SN_PASS     = os.getenv("SN_PASSWORD", "")
+from services.credentials import get_credentials as _get_creds
+
+def _inst():  return _get_creds()["instance"]
+def _user():  return _get_creds()["user"]
+def _pass_(): return _get_creds()["password"]
+
+# Legacy aliases patched by _inject_credentials in main.py (no-op now)
+SN_INSTANCE = ""
+SN_USER     = ""
+SN_PASS     = ""
 
 # =====================================================
 # TABLES TO SYNC
@@ -158,8 +165,8 @@ def _fetch_paginated(table, last_ts_str, page_size=1000):
 
         try:
             r = requests.get(
-                f"{SN_INSTANCE}/api/now/table/{table}",
-                auth=(SN_USER, SN_PASS),
+                f"{_inst()}/api/now/table/{table}",
+                auth=(_user(), _pass_()),
                 headers={"Accept": "application/json"},
                 params=params,
                 timeout=120,
@@ -271,12 +278,13 @@ def _sync_all_tables(force_full=False):
 # =====================================================
 # BACKGROUND SYNC LOOP  (daemon thread from main.py)
 # =====================================================
-def start_sync_loop(sn_instance=None, sn_user=None, sn_pass=None):
+def start_sync_loop():
     """
     Phase 1 — FULL SYNC: pull every record into Postgres.
     Phase 2 — DELTA loop: every DELTA_INTERVAL seconds pull only updated records.
+    Credentials are read live from the credentials store at each request.
     """
-    print(f"[sync] ▶ Phase 1 — FULL SYNC → {SN_INSTANCE}")
+    print(f"[sync] ▶ Phase 1 — FULL SYNC → {_inst()}")
     _sync_all_tables(force_full=True)
     print(f"[sync] ✅ Full sync done. Phase 2 — DELTA every {DELTA_INTERVAL}s.")
 
