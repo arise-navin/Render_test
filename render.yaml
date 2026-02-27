@@ -1,0 +1,39 @@
+# ============================================================
+#  render.yaml — Render Blueprint for ServiceNow AI Copilot
+#  Docs: https://render.com/docs/blueprint-spec
+# ============================================================
+
+services:
+  - type: web
+    name: servicenow-ai-copilot
+    runtime: python
+    region: oregon          # change to: frankfurt | singapore | ohio | virginia
+    plan: free              # upgrade to: starter ($7/mo) for always-on
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+
+    envVars:
+      # ── Postgres (auto-wired from the database block below) ──────────────
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sn-copilot-db
+          property: connectionString   # Render injects postgres://… automatically
+
+      # ── ServiceNow credentials (fill in Render Dashboard) ───────────────
+      - key: SN_INSTANCE
+        sync: false          # Set manually: https://your-instance.service-now.com
+      - key: SN_USERNAME
+        sync: false          # Set manually: your SN username
+      - key: SN_PASSWORD
+        sync: false          # Set manually: your SN password
+
+      # ── NVIDIA / LLM API key ────────────────────────────────────────────
+      - key: NVIDIA_API_KEY
+        sync: false          # Set manually in Render Dashboard
+
+databases:
+  - name: sn-copilot-db
+    databaseName: sn_health
+    plan: free               # 1 GB storage, expires after 90 days on free plan
+    region: oregon           # must match the web service region above
