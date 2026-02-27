@@ -166,7 +166,11 @@ function sendChatMessage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message, history: chatHistory })
     })
-        .then(r => r.json())
+        .then(r => {
+            const ct = r.headers.get('content-type') || '';
+            if (!ct.includes('application/json')) throw new Error('Chat service unavailable — ' + r.status);
+            return r.json();
+        })
         .then(data => {
             removeTypingIndicator();
             addChatMessage('assistant', data.response || 'Processing your request...');
@@ -333,7 +337,13 @@ function callAgent(name) {
     startLoading();
 
     fetch(`/agent/${name}`)
-        .then(r => r.json())
+        .then(r => {
+            const ct = r.headers.get('content-type') || '';
+            if (!ct.includes('application/json')) {
+                throw new Error(`Server returned ${r.status} ${r.statusText}. Check that the backend is running and the route exists.`);
+            }
+            return r.json();
+        })
         .then(data => {
             stopLoading();
             output.innerHTML = renderAgentResult(data, name, meta, col);
@@ -366,7 +376,13 @@ function callRunAll() {
     startLoading();
 
     fetch('/run-all')
-        .then(r => r.json())
+        .then(r => {
+            const ct = r.headers.get('content-type') || '';
+            if (!ct.includes('application/json')) {
+                throw new Error(`Run-all returned ${r.status} ${r.statusText}. Backend may be starting up — please retry in a moment.`);
+            }
+            return r.json();
+        })
         .then(data => {
             stopLoading();
             output.innerHTML = renderRunAll(data);
@@ -1093,12 +1109,20 @@ function renderRunAll(data) {
 
 // ===== RENDER: ERROR =====
 function renderError(msg) {
+    const isNotFound = msg && (msg.includes('404') || msg.includes('Not Found') || msg.includes('unavailable'));
+    const hint = isNotFound
+        ? '<p class="text-muted small mt-2 mb-0"><i class="bi bi-info-circle me-1"></i>The backend may be waking up (Render free tier). Wait 30 seconds and try again.</p>'
+        : '';
     return `
     <div class="card border-0 shadow-sm" style="border-radius:12px;overflow:hidden">
         <div class="card-body p-4 text-center">
             <i class="bi bi-exclamation-triangle-fill text-danger fs-1 mb-3 d-block"></i>
             <h5 class="fw-bold text-danger">Something went wrong</h5>
-            <p class="text-muted mb-0">${escapeHtml(msg || 'Unknown error occurred')}</p>
+            <p class="text-muted mb-2">${escapeHtml(msg || 'Unknown error occurred')}</p>
+            ${hint}
+            <button class="btn btn-outline-primary btn-sm mt-3" onclick="window.location.reload()">
+                <i class="bi bi-arrow-clockwise me-1"></i>Retry
+            </button>
         </div>
     </div>`;
 }
@@ -1283,7 +1307,11 @@ function generateReport() {
     }
 
     fetch('/generate-report')
-        .then(r => r.json())
+        .then(r => {
+            const ct = r.headers.get('content-type') || '';
+            if (!ct.includes('application/json')) throw new Error('Report service unavailable — ' + r.status);
+            return r.json();
+        })
         .then(data => {
             if (!data.job_id) {
                 alert('Failed to start report generation.');
@@ -1346,7 +1374,13 @@ function loadCFODashboard() {
     startLoading();
 
     fetch('/dashboard/cfo')
-        .then(r => r.json())
+        .then(r => {
+            const ct = r.headers.get('content-type') || '';
+            if (!ct.includes('application/json')) {
+                throw new Error(`Dashboard returned ${r.status} ${r.statusText}. Backend may be starting up — please retry.`);
+            }
+            return r.json();
+        })
         .then(data => {
             stopLoading();
             if (data.error) { output.innerHTML = renderError(data.error); return; }
@@ -1985,8 +2019,18 @@ async function triggerFixIt(uid, agentName) {
             })
         });
 
-        if (!resp.ok) throw new Error(`Server error HTTP ${resp.status}`);
+        if (!resp.ok) {
+            const ct = resp.headers.get('content-type') || '';
+            if (!ct.includes('application/json')) {
+                throw new Error(`Server error HTTP ${resp.status} — backend may be starting up, please retry.`);
+            }
+            throw new Error(`Server error HTTP ${resp.status}`);
+        }
 
+        const ct = resp.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) {
+            throw new Error(`Unexpected response from server (not JSON). Backend may be unavailable.`);
+        }
         const data = await resp.json();   // plain JSON — no SSE parsing needed
 
         if (data.status === 'error') throw new Error(data.message || 'AI returned an error');
@@ -2002,7 +2046,7 @@ async function triggerFixIt(uid, agentName) {
         <div class="fixit-error-msg p-3">
             <i class="bi bi-exclamation-triangle-fill text-danger me-2"></i>
             <strong>Fix failed:</strong> ${escapeHtml(e.message)}
-            <div class="mt-1 text-muted" style="font-size:.75rem">Check that the AI model (Ollama) is running.</div>
+            <div class="mt-1 text-muted" style="font-size:.75rem">The backend may be waking up (Render free tier). Wait 30s and retry.</div>
         </div>`;
         btn.innerHTML = `<i class="bi bi-magic"></i><span> Retry</span>`;
         btn.classList.remove('loading');
