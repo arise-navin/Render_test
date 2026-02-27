@@ -104,7 +104,7 @@ def home(request: Request):
 # Agent Routes
 # =====================================================
 
-@app.get("/agent/architecture")
+@app.api_route("/agent/architecture", methods=["GET", "POST"])
 def architecture_agent():
     try:
         return architecture.run()
@@ -112,7 +112,7 @@ def architecture_agent():
         return {"error": str(e), "agent": "architecture"}
 
 
-@app.get("/agent/scripts")
+@app.api_route("/agent/scripts", methods=["GET", "POST"])
 def scripts_agent():
     try:
         return scripts.run()
@@ -120,7 +120,7 @@ def scripts_agent():
         return {"error": str(e), "agent": "scripts"}
 
 
-@app.get("/agent/performance")
+@app.api_route("/agent/performance", methods=["GET", "POST"])
 def performance_agent():
     try:
         return performance.run()
@@ -128,7 +128,7 @@ def performance_agent():
         return {"error": str(e), "agent": "performance"}
 
 
-@app.get("/agent/security")
+@app.api_route("/agent/security", methods=["GET", "POST"])
 def security_agent():
     try:
         return security.run()
@@ -136,7 +136,7 @@ def security_agent():
         return {"error": str(e), "agent": "security"}
 
 
-@app.get("/agent/integration")
+@app.api_route("/agent/integration", methods=["GET", "POST"])
 def integration_agent():
     try:
         return integration.run()
@@ -144,7 +144,7 @@ def integration_agent():
         return {"error": str(e), "agent": "integration"}
 
 
-@app.get("/agent/data-health")
+@app.api_route("/agent/data-health", methods=["GET", "POST"])
 def data_health_agent():
     try:
         return data_health.run()
@@ -152,7 +152,7 @@ def data_health_agent():
         return {"error": str(e), "agent": "data_health"}
 
 
-@app.get("/agent/upgrade")
+@app.api_route("/agent/upgrade", methods=["GET", "POST"])
 def upgrade_agent():
     try:
         return upgrade.run()
@@ -160,7 +160,7 @@ def upgrade_agent():
         return {"error": str(e), "agent": "upgrade"}
 
 
-@app.get("/agent/license-optimization")
+@app.api_route("/agent/license-optimization", methods=["GET", "POST"])
 def license_optimization_agent():
     try:
         return license_optimization.run()
@@ -168,7 +168,7 @@ def license_optimization_agent():
         return {"error": str(e), "agent": "license_optimization"}
 
 
-@app.get("/run-all")
+@app.api_route("/run-all", methods=["GET", "POST"])
 def run_all_agents():
     try:
         return run_all()
@@ -463,12 +463,12 @@ def deactivate_user(req: DeactivateUserRequest):
             "trace":   traceback.format_exc()[-600:],
         }
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "POST"])
 def health_check():
     return {"status": "running", "version": "2.0"}
 
 
-@app.get("/sync/status")
+@app.api_route("/sync/status", methods=["GET", "POST"])
 def sync_status_endpoint():
     """Live sync status — called by the UI every 5s to show sync progress."""
     return get_sync_status()
@@ -959,7 +959,7 @@ def _build_pdf_in_background(job_id: str):
         _pdf_jobs[job_id] = {"status": "error", "error": str(e), "trace": _tb.format_exc()}
 
 
-@app.get("/generate-report")
+@app.api_route("/generate-report", methods=["GET", "POST"])
 def generate_report(background_tasks: BackgroundTasks):
     """
     Kicks off async PDF generation and returns a job_id immediately.
@@ -973,7 +973,7 @@ def generate_report(background_tasks: BackgroundTasks):
                          "message": f"PDF generation started. Poll /report-status/{job_id}"})
 
 
-@app.get("/report-status/{job_id}")
+@app.api_route("/report-status/{job_id}", methods=["GET", "POST"])
 def report_status(job_id: str):
     """Check the status of a PDF generation job."""
     job = _pdf_jobs.get(job_id)
@@ -984,7 +984,7 @@ def report_status(job_id: str):
     return JSONResponse(job)
 
 
-@app.get("/download-report/{job_id}")
+@app.api_route("/download-report/{job_id}", methods=["GET", "POST"])
 def download_report(job_id: str):
     """Download the completed PDF."""
     job = _pdf_jobs.get(job_id)
@@ -1008,7 +1008,7 @@ def download_report(job_id: str):
 # CFO DASHBOARD
 # =====================================================
 
-@app.get("/dashboard/cfo")
+@app.api_route("/dashboard/cfo", methods=["GET", "POST"])
 def cfo_dashboard():
     try:
         # Run ALL agents to collect scores
