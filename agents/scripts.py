@@ -6,6 +6,7 @@ Scripts Agent — analyzes ALL ServiceNow script types:
 Reads directly from individual MySQL columns (not a JSON blob).
 """
 from services.database import fetch_cached
+from agents._fetch import fetch_with_fallback
 from ollama_client import ask_llm
 from datetime import datetime
 import re, json
@@ -44,7 +45,7 @@ def run():
     type_counts = {}
 
     for table, type_label in SCRIPT_TABLES.items():
-        rows = fetch_cached(table)
+        rows = fetch_with_fallback(table, limit=1000)
         type_counts[type_label] = len(rows)
 
         for row in rows:

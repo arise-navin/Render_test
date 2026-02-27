@@ -1,4 +1,5 @@
 from services.database import fetch_cached, get_table_count
+from agents._fetch import fetch_with_fallback
 from ollama_client import ask_llm
 from datetime import datetime
 import re, json
@@ -14,7 +15,7 @@ def _safe_row_get(row, key, default=""):
     return val if val is not None else default
 
 def run():
-    data      = fetch_cached("sys_db_object")   # ALL records, no cap
+    data      = fetch_with_fallback("sys_db_object", limit=2000)   # DB cache or direct SN
     total     = len(data)
 
     # Build meaningful stats from full dataset

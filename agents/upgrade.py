@@ -1,4 +1,5 @@
 from services.database import fetch_cached
+from agents._fetch import fetch_with_fallback
 from ollama_client import ask_llm
 from datetime import datetime
 import re, json
@@ -14,8 +15,29 @@ def _safe_row_get(row, key, default=""):
     return val if val is not None else default
 
 def run():
-    data   = fetch_cached("sys_scope")
-    total  = len(data)
+    data  = fetch_with_fallback("sys_scope", limit=500)
+    total = len(data)
+
+    # If DB has no data yet (table not synced), fetch directly from ServiceNow
+    if not data:
+        try:
+            import os, requests as _req
+            from services.servicenow_client import SN_INSTANCE, SN_USER, SN_PASS
+            r = _req.get(
+                f"{SN_INSTANCE}/api/now/table/sys_scope",
+                auth=(SN_USER, SN_PASS),
+                headers={"Accept": "application/json"},
+                params={"sysparm_limit": 500, "sysparm_display_value": "false"},
+                timeout=30,
+            )
+            if r.status_code == 200:
+                batch = r.json().get("result", [])
+                # Wrap as pseudo-DB rows with a "data" field
+                data  = [{"sys_id": rec.get("sys_id",""), "data": str(rec), **rec}
+                         for rec in batch]
+                total = len(data)
+        except Exception as _e:
+            print(f"[upgrade] direct SN fetch failed: {_e}")
 
     global_scope   = [r for r in data if r and isinstance(r, dict) and '"scope": "global"' in str(r.get("data",""))
                                        or "'scope': 'global'" in str(r.get("data",""))]

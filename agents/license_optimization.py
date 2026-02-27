@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from services.servicenow_client import fetch_table
 from services.database import fetch_cached
+from agents._fetch import fetch_with_fallback
 from ollama_client import ask_llm
 import re
 
@@ -597,7 +598,7 @@ def build_last_login_audit():
 
     Returns a dict with counts + per-user lists for the UI.
     """
-    rows = fetch_cached("sys_user") or []
+    rows = fetch_with_fallback("sys_user", limit=5000) or []
 
     never_logged_in = []
     stale_users     = []

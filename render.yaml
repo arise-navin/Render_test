@@ -32,6 +32,10 @@ services:
       - key: NVIDIA_API_KEY
         sync: false          # Set manually in Render Dashboard
 
+      # ── Session secret (generate a random string and set in Render Dashboard) ─
+      - key: SESSION_SECRET
+        sync: false          # Set manually: any long random string e.g. openssl rand -hex 32
+
 databases:
   - name: sn-copilot-db
     databaseName: sn_health

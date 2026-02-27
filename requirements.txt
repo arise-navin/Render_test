@@ -19,3 +19,4 @@ reportlab
 
 # .env support for local development
 python-dotenv
+itsdangerous

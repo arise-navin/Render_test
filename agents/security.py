@@ -1,10 +1,11 @@
 from services.database import fetch_cached
+from agents._fetch import fetch_with_fallback
 from ollama_client import ask_llm
 from datetime import datetime
 import re, json, ast
 
 def run():
-    data   = fetch_cached("sys_security_acl")
+    data   = fetch_with_fallback("sys_security_acl", limit=1000)
     total  = len(data)
 
     parsed_acls    = [_safe_parse(r.get("data","")) for r in data]

@@ -1293,3 +1293,29 @@ tr.deactivated-row td {
     animation: fadeIn .18s ease;
 }
 @keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+
+/* ===== LOGIN OVERLAY ===== */
+.login-input::placeholder { color: rgba(255,255,255,.35) !important; }
+.login-input:focus {
+    background: rgba(255,255,255,.12) !important;
+    border-color: rgba(13,110,253,.6) !important;
+    box-shadow: 0 0 0 3px rgba(13,110,253,.2) !important;
+    color: #fff !important;
+    outline: none;
+}
+.login-input option { background: #1a2d4a; color: #fff; }
+
+#loginOverlay {
+    animation: fadeIn .3s ease;
+}
+@keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
+
+#loginOverlay.hiding {
+    animation: fadeOut .4s ease forwards;
+}
+@keyframes fadeOut { from { opacity:1; transform:scale(1); } to { opacity:0; transform:scale(.97); } }
+
+/* ===== SESSION BADGE ===== */
+#sessionBadge {
+    transition: all .3s ease;
+}

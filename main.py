@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi import FastAPI, Request, BackgroundTasks, Cookie, Response, HTTPException
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 # Load .env file for local development (no-op if python-dotenv not installed)
 try:
     from dotenv import load_dotenv
@@ -6,15 +7,68 @@ try:
 except ImportError:
     pass
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+import requests as _http_requests
 
 import threading
 import os
 import uuid
+
+# =====================================================
+# Session / Auth helpers
+# =====================================================
+_SESSION_SECRET = os.environ.get("SESSION_SECRET", "sn-copilot-secret-change-me-in-render")
+_signer = URLSafeTimedSerializer(_SESSION_SECRET)
+_SESSION_COOKIE = "sn_session"
+_SESSION_MAX_AGE = 60 * 60 * 8   # 8 hours
+
+# In-memory session store: token -> {instance, user, role}
+_sessions: dict = {}
+
+def _make_token(payload: dict) -> str:
+    import json
+    return _signer.dumps(json.dumps(payload))
+
+def _read_token(token: str) -> dict | None:
+    try:
+        import json
+        raw = _signer.loads(token, max_age=_SESSION_MAX_AGE)
+        return json.loads(raw)
+    except (BadSignature, SignatureExpired, Exception):
+        return None
+
+def _get_session(request: Request) -> dict | None:
+    token = request.cookies.get(_SESSION_COOKIE)
+    if not token:
+        return None
+    return _read_token(token)
+
+def _require_session(request: Request) -> dict:
+    sess = _get_session(request)
+    if not sess:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return sess
+
+
+def _inject_credentials(sess: dict):
+    """Inject session credentials into all service modules so agents use them."""
+    instance = sess.get("sn_instance", "")
+    user     = sess.get("sn_username", "")
+    password = sess.get("sn_password", "")
+
+    import services.servicenow_client as _snc
+    import services.sync_service      as _ss
+
+    _snc.SN_INSTANCE = instance
+    _snc.SN_USER     = user
+    _snc.SN_PASS     = password
+    _ss.SN_INSTANCE  = instance
+    _ss.SN_USER      = user
+    _ss.SN_PASS      = password
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
     HRFlowable, KeepTogether, PageBreak
@@ -39,16 +93,29 @@ _pdf_jobs: dict = {}  # job_id -> {"status": "pending"|"done"|"error", "path": .
 # =====================================================
 # Lifespan
 # =====================================================
+_sync_started = False
+
+def _maybe_start_sync(sn_instance: str, sn_user: str, sn_pass: str):
+    """Start the sync loop once (first successful login)."""
+    global _sync_started
+    if _sync_started:
+        return
+    _sync_started = True
+    # Patch module-level globals so sync_service uses the right credentials
+    import services.sync_service as _ss
+    _ss.SN_INSTANCE = sn_instance
+    _ss.SN_USER     = sn_user
+    _ss.SN_PASS     = sn_pass
+    threading.Thread(
+        target=start_sync_loop,
+        args=(sn_instance, sn_user, sn_pass),
+        daemon=True
+    ).start()
+    print(f"✓ Delta Sync started → {sn_instance}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from services.servicenow_client import SN_INSTANCE, SN_USER, SN_PASS
-    threading.Thread(
-        target=start_sync_loop,
-        args=(SN_INSTANCE, SN_USER, SN_PASS),
-        daemon=True
-    ).start()
-    print(f"✓ Delta Sync started → {SN_INSTANCE} (every 10s)")
+    print("✓ ServiceNow AI Copilot starting — waiting for user login to begin sync")
     yield
     print("✓ Application shutdown")
 
@@ -103,6 +170,88 @@ class FixItRequest(BaseModel):
 # Routes
 # =====================================================
 
+# =====================================================
+# Auth Models
+# =====================================================
+
+class LoginRequest(BaseModel):
+    sn_instance: str
+    sn_username: str
+    sn_password: str
+    role: str = "analyst"   # analyst | admin | readonly
+
+# =====================================================
+# Auth Routes
+# =====================================================
+
+@app.post("/auth/login")
+def auth_login(req: LoginRequest, response: Response):
+    """Validate SN credentials, create session cookie."""
+    instance = req.sn_instance.rstrip("/")
+    if not instance.startswith("http"):
+        instance = "https://" + instance
+
+    # Test credentials against ServiceNow
+    try:
+        test = _http_requests.get(
+            f"{instance}/api/now/table/sys_user?sysparm_limit=1",
+            auth=(req.sn_username, req.sn_password),
+            headers={"Accept": "application/json"},
+            timeout=15,
+        )
+    except Exception as e:
+        return JSONResponse({"success": False, "error": f"Cannot reach instance: {e}"}, status_code=400)
+
+    if test.status_code == 401:
+        return JSONResponse({"success": False, "error": "Invalid username or password"}, status_code=401)
+    if test.status_code == 403:
+        return JSONResponse({"success": False, "error": "Access denied — check user permissions"}, status_code=403)
+    if test.status_code not in (200, 201):
+        return JSONResponse({"success": False, "error": f"ServiceNow returned HTTP {test.status_code}"}, status_code=400)
+
+    payload = {
+        "sn_instance": instance,
+        "sn_username": req.sn_username,
+        "sn_password": req.sn_password,
+        "role": req.role,
+    }
+    token = _make_token(payload)
+
+    # Kick off background sync with these credentials
+    _maybe_start_sync(instance, req.sn_username, req.sn_password)
+
+    resp = JSONResponse({"success": True, "role": req.role, "instance": instance})
+    resp.set_cookie(
+        key=_SESSION_COOKIE,
+        value=token,
+        max_age=_SESSION_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=False,   # set True if behind HTTPS (Render handles this)
+    )
+    return resp
+
+
+@app.post("/auth/logout")
+def auth_logout(response: Response):
+    resp = JSONResponse({"success": True})
+    resp.delete_cookie(_SESSION_COOKIE)
+    return resp
+
+
+@app.get("/auth/status")
+def auth_status(request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"authenticated": False})
+    return JSONResponse({
+        "authenticated": True,
+        "role": sess.get("role", "analyst"),
+        "instance": sess.get("sn_instance", ""),
+        "username": sess.get("sn_username", ""),
+    })
+
+
 @app.get("/")
 def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
@@ -112,7 +261,11 @@ def home(request: Request):
 # =====================================================
 
 @app.api_route("/agent/architecture", methods=["GET", "POST"])
-def architecture_agent():
+def architecture_agent(request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"error": "Not authenticated", "auth_required": True}, status_code=401)
+    _inject_credentials(sess)
     try:
         return architecture.run()
     except Exception as e:
@@ -120,7 +273,11 @@ def architecture_agent():
 
 
 @app.api_route("/agent/scripts", methods=["GET", "POST"])
-def scripts_agent():
+def scripts_agent(request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"error": "Not authenticated", "auth_required": True}, status_code=401)
+    _inject_credentials(sess)
     try:
         return scripts.run()
     except Exception as e:
@@ -128,7 +285,11 @@ def scripts_agent():
 
 
 @app.api_route("/agent/performance", methods=["GET", "POST"])
-def performance_agent():
+def performance_agent(request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"error": "Not authenticated", "auth_required": True}, status_code=401)
+    _inject_credentials(sess)
     try:
         return performance.run()
     except Exception as e:
@@ -136,7 +297,11 @@ def performance_agent():
 
 
 @app.api_route("/agent/security", methods=["GET", "POST"])
-def security_agent():
+def security_agent(request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"error": "Not authenticated", "auth_required": True}, status_code=401)
+    _inject_credentials(sess)
     try:
         return security.run()
     except Exception as e:
@@ -144,7 +309,11 @@ def security_agent():
 
 
 @app.api_route("/agent/integration", methods=["GET", "POST"])
-def integration_agent():
+def integration_agent(request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"error": "Not authenticated", "auth_required": True}, status_code=401)
+    _inject_credentials(sess)
     try:
         return integration.run()
     except Exception as e:
@@ -152,7 +321,11 @@ def integration_agent():
 
 
 @app.api_route("/agent/data-health", methods=["GET", "POST"])
-def data_health_agent():
+def data_health_agent(request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"error": "Not authenticated", "auth_required": True}, status_code=401)
+    _inject_credentials(sess)
     try:
         return data_health.run()
     except Exception as e:
@@ -160,7 +333,11 @@ def data_health_agent():
 
 
 @app.api_route("/agent/upgrade", methods=["GET", "POST"])
-def upgrade_agent():
+def upgrade_agent(request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"error": "Not authenticated", "auth_required": True}, status_code=401)
+    _inject_credentials(sess)
     try:
         return upgrade.run()
     except Exception as e:
@@ -168,7 +345,11 @@ def upgrade_agent():
 
 
 @app.api_route("/agent/license-optimization", methods=["GET", "POST"])
-def license_optimization_agent():
+def license_optimization_agent(request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"error": "Not authenticated", "auth_required": True}, status_code=401)
+    _inject_credentials(sess)
     try:
         return license_optimization.run()
     except Exception as e:
@@ -176,7 +357,11 @@ def license_optimization_agent():
 
 
 @app.api_route("/run-all", methods=["GET", "POST"])
-def run_all_agents():
+def run_all_agents(request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"error": "Not authenticated", "auth_required": True}, status_code=401)
+    _inject_credentials(sess)
     try:
         return run_all()
     except Exception as e:
@@ -187,7 +372,7 @@ def run_all_agents():
 # =====================================================
 
 @app.post("/chat")
-def chat_endpoint(chat_message: ChatMessage):
+def chat_endpoint(chat_message: ChatMessage, request: Request):
 
     try:
         user_message = chat_message.message
@@ -1016,7 +1201,11 @@ def download_report(job_id: str):
 # =====================================================
 
 @app.api_route("/dashboard/cfo", methods=["GET", "POST"])
-def cfo_dashboard():
+def cfo_dashboard(request: Request):
+    sess = _get_session(request)
+    if not sess:
+        return JSONResponse({"error": "Not authenticated", "auth_required": True}, status_code=401)
+    _inject_credentials(sess)
     try:
         # Run ALL agents to collect scores
         import concurrent.futures

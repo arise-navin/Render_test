@@ -1,4 +1,5 @@
 from services.database import fetch_cached
+from agents._fetch import fetch_with_fallback
 from ollama_client import ask_llm
 from datetime import datetime
 import re, json
@@ -14,7 +15,7 @@ def _safe_row_get(row, key, default=""):
     return val if val is not None else default
 
 def run():
-    data   = fetch_cached("sys_rest_message")
+    data   = fetch_with_fallback("sys_rest_message", limit=500)
     total  = len(data)
 
     basic_auth = [r for r in data if r and isinstance(r, dict) and "basic" in str(r.get("data","")).lower()]

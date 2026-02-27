@@ -1,3 +1,122 @@
+// ===== AUTH / LOGIN =====
+
+async function checkAuthOnLoad() {
+    try {
+        const r = await fetch('/auth/status');
+        const data = await r.json();
+        if (data.authenticated) {
+            showApp(data);
+        } else {
+            showLogin();
+        }
+    } catch {
+        showLogin();
+    }
+}
+
+function showLogin() {
+    document.getElementById('loginOverlay').style.display = 'flex';
+    document.getElementById('appWrapper').classList.add('d-none');
+}
+
+function showApp(sessionData) {
+    const overlay = document.getElementById('loginOverlay');
+    overlay.classList.add('hiding');
+    setTimeout(() => { overlay.style.display = 'none'; }, 400);
+
+    document.getElementById('appWrapper').classList.remove('d-none');
+
+    // Populate session info in sidebar
+    const inst = (sessionData.instance || '').replace('https://','').replace('http://','');
+    document.getElementById('sessionInstance').textContent = inst.split('.')[0] || inst;
+    document.getElementById('sessionUser').textContent = sessionData.username || '';
+    const roleLabels = { admin: 'Admin', analyst: 'Analyst', readonly: 'Read Only' };
+    const roleColors = { admin: 'bg-danger', analyst: 'bg-primary', readonly: 'bg-secondary' };
+    const role = sessionData.role || 'analyst';
+    const badge = document.getElementById('sessionRoleBadge');
+    badge.textContent = roleLabels[role] || role;
+    badge.className = 'badge ' + (roleColors[role] || 'bg-primary');
+
+    // Store role for UI gating
+    window._userRole = role;
+}
+
+async function doLogin() {
+    const instanceRaw = document.getElementById('loginInstance').value.trim();
+    const username    = document.getElementById('loginUsername').value.trim();
+    const password    = document.getElementById('loginPassword').value;
+    const role        = document.getElementById('loginRole').value;
+    const errEl       = document.getElementById('loginError');
+
+    errEl.classList.add('d-none');
+    errEl.textContent = '';
+
+    if (!instanceRaw || !username || !password) {
+        errEl.textContent = 'Please fill in all fields.';
+        errEl.classList.remove('d-none');
+        return;
+    }
+
+    // Normalise instance URL
+    let instance = instanceRaw;
+    if (!instance.startsWith('http')) instance = 'https://' + instance;
+    instance = instance.replace(/\/+$/, '');
+
+    // Show spinner
+    document.getElementById('loginBtnText').classList.add('d-none');
+    document.getElementById('loginBtnSpinner').classList.remove('d-none');
+    document.getElementById('loginBtn').disabled = true;
+
+    try {
+        const resp = await fetch('/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sn_instance: instance, sn_username: username, sn_password: password, role })
+        });
+
+        const data = await resp.json();
+
+        if (data.success) {
+            showApp({ instance, username, role });
+        } else {
+            errEl.textContent = data.error || 'Login failed. Check your credentials.';
+            errEl.classList.remove('d-none');
+        }
+    } catch (e) {
+        errEl.textContent = 'Connection error: ' + e.message;
+        errEl.classList.remove('d-none');
+    } finally {
+        document.getElementById('loginBtnText').classList.remove('d-none');
+        document.getElementById('loginBtnSpinner').classList.add('d-none');
+        document.getElementById('loginBtn').disabled = false;
+    }
+}
+
+function togglePassword() {
+    const inp  = document.getElementById('loginPassword');
+    const icon = document.getElementById('togglePwdIcon');
+    if (inp.type === 'password') {
+        inp.type = 'text';
+        icon.className = 'bi bi-eye-slash';
+    } else {
+        inp.type = 'password';
+        icon.className = 'bi bi-eye';
+    }
+}
+
+async function doLogout() {
+    await fetch('/auth/logout', { method: 'POST' });
+    window.location.reload();
+}
+
+// Handle 401 from any agent call — redirect to login
+function _handleAuthError() {
+    showLogin();
+    document.getElementById('loginError').textContent = 'Session expired. Please reconnect.';
+    document.getElementById('loginError').classList.remove('d-none');
+}
+
+// ===== GLOBALS =====
 // ===== GLOBALS =====
 let chatHistory = [];
 let currentAgent = null;
@@ -29,6 +148,9 @@ const COLOR_MAP = {
 
 // ===== INIT =====
 document.addEventListener('DOMContentLoaded', function () {
+    // Check auth before showing app
+    checkAuthOnLoad();
+
     const toggle = document.getElementById('sidebarToggle');
     const sidebar = document.getElementById('sidebar-wrapper');
     if (toggle) {
@@ -346,6 +468,7 @@ function callAgent(name) {
         })
         .then(data => {
             stopLoading();
+            if (data && data.auth_required) { _handleAuthError(); return; }
             output.innerHTML = renderAgentResult(data, name, meta, col);
             // Initialise pagination controls for any agents that have >PAGE_SIZE errors
             if (_errPages[name]) _renderPagination(name);
